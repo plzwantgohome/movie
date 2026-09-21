@@ -1,328 +1,224 @@
-import streamlit as st
-import pandas as pd
-import requests
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
-
-st.set_page_config(page_title="박스오피스 대시보드", layout="wide")
-st.title("🎬 날짜별 박스오피스")
-
-# ---------------------------------------------------------
-# 1. 비밀 금고에서 인증키 가져오기
-# ---------------------------------------------------------
-# 실제 인증키는 코드에 직접 적지 않고
-# Streamlit Cloud의 Secrets에 저장한다.
-KOBIS_KEY = st.secrets["KOBIS_KEY"]
+from collections import Counter
 
 
 # ---------------------------------------------------------
-# 2. 한국 시간 기준으로 선택 가능한 마지막 날짜 계산
+# 이름의 자음·모음을 분석해서 영화 추천하기
 # ---------------------------------------------------------
-# Streamlit Cloud 서버는 한국 시간이 아닐 수도 있으므로
-# Asia/Seoul 시간대를 직접 지정한다.
-korea_now = datetime.now(ZoneInfo("Asia/Seoul"))
 
-# 오늘 데이터는 아직 집계 전이므로
-# 선택 가능한 가장 늦은 날짜는 어제이다.
-yesterday = (korea_now - timedelta(days=1)).date()
+# 한글 초성 목록
+CHO = [
+    "ㄱ", "ㄲ", "ㄴ", "ㄷ", "ㄸ", "ㄹ", "ㅁ", "ㅂ", "ㅃ",
+    "ㅅ", "ㅆ", "ㅇ", "ㅈ", "ㅉ", "ㅊ", "ㅋ", "ㅌ", "ㅍ", "ㅎ"
+]
 
+# 한글 중성 목록
+JUNG = [
+    "ㅏ", "ㅐ", "ㅑ", "ㅒ", "ㅓ", "ㅔ", "ㅕ", "ㅖ",
+    "ㅗ", "ㅘ", "ㅙ", "ㅚ", "ㅛ", "ㅜ", "ㅝ", "ㅞ",
+    "ㅟ", "ㅠ", "ㅡ", "ㅢ", "ㅣ"
+]
 
-# ---------------------------------------------------------
-# 3. 달력에서 조회할 날짜 선택
-# ---------------------------------------------------------
-selected_date = st.date_input(
-    "📅 박스오피스 날짜를 선택하세요",
-    value=yesterday,       # 처음에는 어제를 보여 준다.
-    max_value=yesterday,   # 오늘과 미래 날짜는 선택할 수 없다.
-    format="YYYY-MM-DD"
-)
-
-# KOBIS API는 날짜를 YYYYMMDD 형식으로 요구한다.
-target_dt = selected_date.strftime("%Y%m%d")
-
-st.caption(
-    f"조회 기준일: {selected_date.strftime('%Y-%m-%d')}"
-)
-
-
-# ---------------------------------------------------------
-# 4. KOBIS API에 박스오피스 데이터 요청
-# ---------------------------------------------------------
-url = (
-    "https://www.kobis.or.kr/kobisopenapi/webservice/rest/"
-    "boxoffice/searchDailyBoxOfficeList.json"
-)
-
-try:
-    res = requests.get(
-        url,
-        params={
-            "key": KOBIS_KEY,
-            "targetDt": target_dt
-        },
-        timeout=10
-    )
-
-except requests.exceptions.RequestException:
-    st.error(
-        "KOBIS 서버에 연결하지 못했습니다. "
-        "인터넷 연결 상태나 KOBIS 서버 상태를 확인해 주세요."
-    )
-    st.stop()
-
-
-# HTTP 요청 자체가 실패한 경우
-if res.status_code != 200:
-    st.error(
-        f"요청이 실패했습니다. "
-        f"(상태코드: {res.status_code})"
-    )
-    st.stop()
-
-
-# ---------------------------------------------------------
-# 5. 받은 데이터를 JSON 형태로 변환
-# ---------------------------------------------------------
-try:
-    data = res.json()
-
-except ValueError:
-    st.error(
-        "KOBIS 서버에서 정상적인 데이터를 받지 못했습니다. "
-        "잠시 후 다시 시도해 주세요."
-    )
-    st.stop()
-
-
-# ---------------------------------------------------------
-# 6. KOBIS 오류 확인
-# ---------------------------------------------------------
-# KOBIS는 인증키가 틀려도 상태코드 200을 줄 수 있다.
-# 이 경우 응답 안에 faultInfo가 들어 있다.
-if "faultInfo" in data:
-    st.error(
-        "KOBIS API에서 오류가 발생했습니다. "
-        "금고(Secrets)의 KOBIS_KEY가 올바른지 확인해 주세요."
-    )
-    st.stop()
-
-
-# ---------------------------------------------------------
-# 7. 영화 목록 꺼내기
-# ---------------------------------------------------------
-box_list = (
-    data
-    .get("boxOfficeResult", {})
-    .get("dailyBoxOfficeList", [])
-)
-
-
-# 영화 목록이 비어 있는 경우
-if not box_list:
-    st.warning("그날은 아직 집계 전입니다")
-    st.stop()
-
-
-# ---------------------------------------------------------
-# 8. 판다스 DataFrame으로 변환
-# ---------------------------------------------------------
-df = pd.DataFrame(box_list)
-
-
-# ---------------------------------------------------------
-# 9. 문자열로 온 숫자를 실제 숫자로 변환
-# ---------------------------------------------------------
-# KOBIS에서는 숫자도 문자열 형태로 보내 준다.
-for col in [
-    "rank",
-    "rankInten",
-    "audiCnt",
-    "audiAcc",
-    "scrnCnt",
-    "showCnt"
-]:
-    df[col] = pd.to_numeric(
-        df[col],
-        errors="coerce"
-    ).fillna(0).astype(int)
-
-
-# 순위 순서대로 정렬
-df = df.sort_values("rank").reset_index(drop=True)
-
-
-# ---------------------------------------------------------
-# 10. 1위 영화 정보
-# ---------------------------------------------------------
-top = df.iloc[0]
-
-st.subheader(f"🏆 {selected_date.strftime('%Y-%m-%d')} 박스오피스 1위")
-
-c1, c2, c3 = st.columns(3)
-
-c1.metric(
-    "1위 영화",
-    top["movieNm"]
-)
-
-c2.metric(
-    "당일 관객수",
-    f"{top['audiCnt']:,}명"
-)
-
-c3.metric(
-    "누적 관객",
-    f"{top['audiAcc']:,}명"
-)
-
-
-# ---------------------------------------------------------
-# 11. 표에 표시할 순위 변동 만들기
-# ---------------------------------------------------------
-def make_rank_change(value):
-    """
-    rankInten:
-    양수 = 전날보다 순위 상승
-    음수 = 전날보다 순위 하락
-    0 = 순위 변화 없음
-    """
-
-    if value > 0:
-        return f"↑ {value}"
-
-    elif value < 0:
-        return f"↓ {abs(value)}"
-
-    else:
-        return "―"
-
-
-df["순위변동"] = df["rankInten"].apply(make_rank_change)
-
-
-# ---------------------------------------------------------
-# 12. 누적 관객 100만 명 이상 영화에 트로피 붙이기
-# ---------------------------------------------------------
-def add_trophy(row):
-    if row["audiAcc"] >= 1_000_000:
-        return f"{row['movieNm']} 🏆"
-    else:
-        return row["movieNm"]
-
-
-df["표시영화명"] = df.apply(
-    add_trophy,
-    axis=1
-)
-
-
-# ---------------------------------------------------------
-# 13. 전체 박스오피스 표 만들기
-# ---------------------------------------------------------
-table = df[
-    [
-        "rank",
-        "순위변동",
-        "표시영화명",
-        "openDt",
-        "audiCnt",
-        "audiAcc",
-        "scrnCnt"
-    ]
-].copy()
-
-
-# 한글 열 이름으로 변경
-table.columns = [
-    "순위",
-    "순위 변동",
-    "영화명",
-    "개봉일",
-    "관객수",
-    "누적관객",
-    "스크린수"
+# 한글 종성 목록
+JONG = [
+    "", "ㄱ", "ㄲ", "ㄳ", "ㄴ", "ㄵ", "ㄶ", "ㄷ", "ㄹ",
+    "ㄺ", "ㄻ", "ㄼ", "ㄽ", "ㄾ", "ㄿ", "ㅀ", "ㅁ",
+    "ㅂ", "ㅄ", "ㅅ", "ㅆ", "ㅇ", "ㅈ", "ㅊ", "ㅋ",
+    "ㅌ", "ㅍ", "ㅎ"
 ]
 
 
-# ---------------------------------------------------------
-# 14. 순위 변동에 색 넣기
-# ---------------------------------------------------------
-def color_rank_change(value):
+def split_hangul(text):
     """
-    상승 화살표는 빨간색,
-    하락 화살표는 파란색으로 표시한다.
+    한글을 초성, 중성, 종성으로 나눈다.
+
+    예:
+    '민지'
+    → 자음: ㅁ, ㄴ, ㅈ
+    → 모음: ㅣ, ㅣ
     """
 
-    if isinstance(value, str):
+    consonants = []
+    vowels = []
 
-        if value.startswith("↑"):
-            return "color: #e53935; font-weight: bold;"
+    for char in text:
 
-        elif value.startswith("↓"):
-            return "color: #1e88e5; font-weight: bold;"
+        # 한글 음절인지 확인
+        if "가" <= char <= "힣":
 
-    return ""
+            # '가'를 기준으로 몇 번째 한글 글자인지 계산
+            code = ord(char) - ord("가")
+
+            # 초성, 중성, 종성 번호 계산
+            cho_index = code // 588
+            jung_index = (code % 588) // 28
+            jong_index = code % 28
+
+            # 초성은 자음
+            consonants.append(CHO[cho_index])
+
+            # 중성은 모음
+            vowels.append(JUNG[jung_index])
+
+            # 받침이 있는 경우 자음에 추가
+            if JONG[jong_index]:
+                consonants.append(JONG[jong_index])
+
+    return consonants, vowels
 
 
-styled_table = table.style.map(
-    color_rank_change,
-    subset=["순위 변동"]
-)
+def overlap_score(list1, list2):
+    """
+    두 목록에서 같은 글자가 얼마나 많이 등장하는지 계산한다.
 
+    예:
+    이름 자음: ㅇ, ㅈ, ㅇ
+    영화 자음: ㅇ, ㅈ, ㅅ
 
-# ---------------------------------------------------------
-# 15. 표 출력
-# ---------------------------------------------------------
-st.subheader("📋 박스오피스 TOP 10")
+    → ㅇ과 ㅈ이 겹치므로 점수가 올라간다.
+    """
 
-st.dataframe(
-    styled_table,
-    hide_index=True,
-    use_container_width=True,
-    column_config={
-        "순위": st.column_config.NumberColumn(
-            "순위",
-            format="%d위"
-        ),
-        "관객수": st.column_config.NumberColumn(
-            "관객수",
-            format="%d명"
-        ),
-        "누적관객": st.column_config.NumberColumn(
-            "누적관객",
-            format="%d명"
-        ),
-        "스크린수": st.column_config.NumberColumn(
-            "스크린수",
-            format="%d개"
+    count1 = Counter(list1)
+    count2 = Counter(list2)
+
+    score = 0
+
+    for letter in count1:
+        score += min(
+            count1[letter],
+            count2.get(letter, 0)
         )
-    }
-)
+
+    return score
+
+
+def movie_match_score(name, movie_title):
+    """
+    이름과 영화 제목의 자음·모음 유사도를 계산한다.
+    """
+
+    name_consonants, name_vowels = split_hangul(name)
+    movie_consonants, movie_vowels = split_hangul(movie_title)
+
+    # 자음이 같은 정도
+    consonant_score = overlap_score(
+        name_consonants,
+        movie_consonants
+    )
+
+    # 모음이 같은 정도
+    vowel_score = overlap_score(
+        name_vowels,
+        movie_vowels
+    )
+
+    # 자음은 1.2점, 모음은 1점으로 계산
+    score = (
+        consonant_score * 1.2
+        + vowel_score
+    )
+
+    # 이름과 영화 제목의 글자 수가 비슷하면 약간의 추가 점수
+    length_difference = abs(
+        len(name) - len(movie_title)
+    )
+
+    length_bonus = max(
+        0,
+        1 - length_difference * 0.15
+    )
+
+    score += length_bonus
+
+    return score
 
 
 # ---------------------------------------------------------
-# 16. 관객수 상위 5편 막대그래프
+# 화면에 영화 추천 기능 표시
 # ---------------------------------------------------------
-st.subheader("📈 관객수 상위 5편")
+st.divider()
 
-# 당일 관객수 기준으로 가장 많은 영화 5편
-top5 = (
-    df
-    .sort_values("audiCnt", ascending=False)
-    .head(5)
-    [["movieNm", "audiCnt"]]
+st.subheader("✨ 내 이름과 어울리는 영화 찾기")
+
+st.write(
+    "이름의 자음과 모음을 분석해서 "
+    "현재 박스오피스 영화 중 가장 비슷한 제목을 찾아드려요."
 )
 
-st.bar_chart(
-    top5.set_index("movieNm")["audiCnt"],
-    x_label="영화",
-    y_label="관객수"
+user_name = st.text_input(
+    "이름을 입력하세요",
+    placeholder="예: 이주연"
 )
 
 
-# ---------------------------------------------------------
-# 17. 데이터 출처
-# ---------------------------------------------------------
-st.caption(
-    "데이터 출처: 영화진흥위원회 KOBIS 영화관입장권통합전산망 Open API"
-)
+# 이름을 입력했을 때만 추천 실행
+if user_name:
+
+    # 입력값에서 앞뒤 공백 제거
+    user_name = user_name.strip()
+
+    # 한글 분석
+    name_consonants, name_vowels = split_hangul(user_name)
+
+    # 한글 이름이 아닌 경우
+    if not name_consonants and not name_vowels:
+
+        st.warning(
+            "한글 이름을 입력해 주세요."
+        )
+
+    else:
+
+        # 각 영화의 이름 궁합 점수 계산
+        recommend_df = df.copy()
+
+        recommend_df["이름궁합점수"] = recommend_df["movieNm"].apply(
+            lambda movie:
+            movie_match_score(
+                user_name,
+                movie
+            )
+        )
+
+        # 점수가 높은 영화부터 정렬
+        recommend_df = recommend_df.sort_values(
+            "이름궁합점수",
+            ascending=False
+        ).reset_index(drop=True)
+
+        # 가장 잘 어울리는 영화
+        best_movie = recommend_df.iloc[0]
+
+        st.success(
+            f"🎬 {user_name}님과 가장 어울리는 영화는 "
+            f"**{best_movie['movieNm']}** 입니다!"
+        )
+
+        # 이름에서 분석한 자음과 모음 보여 주기
+        st.write(
+            "🔤 이름의 자음:",
+            " ".join(name_consonants)
+        )
+
+        st.write(
+            "🔡 이름의 모음:",
+            " ".join(name_vowels)
+        )
+
+        # 추천 영화 3편
+        st.markdown("#### 🎞️ 이름 궁합 TOP 3")
+
+        top3 = recommend_df.head(3)
+
+        for i, (_, movie) in enumerate(
+            top3.iterrows(),
+            start=1
+        ):
+
+            movie_consonants, movie_vowels = split_hangul(
+                movie["movieNm"]
+            )
+
+            st.write(
+                f"**{i}위. {movie['movieNm']}**  "
+                f"｜ 관객수 {movie['audiCnt']:,}명"
+            )
