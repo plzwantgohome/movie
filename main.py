@@ -523,7 +523,7 @@ st.write(
 
 user_name = st.text_input(
     "이름을 입력하세요",
-    placeholder="예: 이주연"
+    placeholder="예: 홍길동"
 )
 
 
